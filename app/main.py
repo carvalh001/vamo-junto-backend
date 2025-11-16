@@ -26,8 +26,9 @@ async def lifespan(app: FastAPI):
     # Run database migrations automatically
     try:
         logger.info("Running database migrations...")
+        # Use the Alembic CLI script available in the environment
         result = subprocess.run(
-            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            ["alembic", "upgrade", "head"],
             capture_output=True,
             text=True,
             check=False
