@@ -71,7 +71,7 @@ def test_qrcode_scraping(qrcode_url: str = None):
     
     # URL padrão do QR code se não fornecida
     if qrcode_url is None:
-        qrcode_url = "https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=35251106024283000198651100000008971119149935|2|1|1|D7FC8EEDB2439485E673A96F49818AD52DCA0408"
+        qrcode_url = "https://www.nfce.fazenda.sp.gov.br/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=35251137849063000208651010000143151119149935|2|1|1|55BFC6765E2FF5129F09969EA461999132AB2DA6"
     
     print_section("TESTE DE LEITURA DE QR CODE NFC-e")
     print(f"\nURL do QR Code: {qrcode_url}\n")

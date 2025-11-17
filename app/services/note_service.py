@@ -23,7 +23,7 @@ def process_and_save_note(user_id: int, code_or_url: str) -> Dict:
     # Check if note already exists
     access_key_hash = hash_access_key(nfce_data["access_key"])
     if check_note_exists(access_key_hash, user_id):
-        raise ValueError("This note has already been registered.")
+        raise ValueError("Esta nota fiscal já foi escaneada anteriormente.")
     
     # Create note
     note = create_note(

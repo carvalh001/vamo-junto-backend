@@ -26,15 +26,44 @@ async def scan_note(
         note = process_and_save_note(current_user["id"], scan_data.code_or_url)
         return NoteResponse(**note)
     except ValueError as e:
+        # User-friendly errors (e.g., note already exists, invalid code)
+        error_msg = str(e)
+        
+        # Special handling for duplicate notes - this is not really an error
+        if "já foi escaneada" in error_msg.lower() or "already been registered" in error_msg.lower():
+            logger.info(f"User attempted to scan duplicate note: {current_user['id']}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Esta nota fiscal já foi escaneada anteriormente."
+            )
+        
+        # Other validation errors
+        logger.warning(f"Validation error scanning note: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except Exception as e:
-        logger.error(f"Error scanning note: {e}")
+        error_message = str(e)
+        logger.error(f"Error scanning note: {error_message}", exc_info=True)
+        
+        # Provide more specific error messages based on error type
+        if "not found" in error_message.lower() or "invalid" in error_message.lower():
+            detail = "NFC-e não encontrada ou código inválido. Verifique o código e tente novamente."
+            status_code = status.HTTP_400_BAD_REQUEST
+        elif "parse" in error_message.lower() or "format" in error_message.lower():
+            detail = "Não foi possível processar os dados da NFC-e. O formato pode ter mudado. Tente novamente mais tarde."
+            status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+        elif "fetch" in error_message.lower() or "network" in error_message.lower():
+            detail = "Erro ao buscar dados da NFC-e. Verifique sua conexão e tente novamente."
+            status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        else:
+            detail = "Erro ao processar nota fiscal. Por favor, tente novamente."
+            status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+        
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to process note. Please check the code and try again."
+            status_code=status_code,
+            detail=detail
         )
 
 

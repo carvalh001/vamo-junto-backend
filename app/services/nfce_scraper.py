@@ -45,24 +45,38 @@ def parse_nfce_code(code_or_url: str) -> str:
     raise ValueError("Invalid NFC-e code format. Must be 44 digits.")
 
 
-def build_consult_url(code: str) -> str:
+def build_consult_url(code: str, original_url: str = None) -> str:
     """Build consultation URL for NFC-e"""
-    # Format code as 11 groups of 4 digits
-    formatted_code = " ".join([code[i:i+4] for i in range(0, 44, 4)])
-    # Build URL - try the QR code format first
+    # If original URL is provided and contains the hash, use it
+    if original_url and "|" in original_url and original_url.count("|") >= 4:
+        # Extract the hash part from original URL if present
+        parts = original_url.split("|")
+        if len(parts) >= 5:
+            # URL format: ...?p=CODE|2|1|1|HASH
+            hash_part = parts[-1]  # Last part is the hash
+            if hash_part and len(hash_part) > 10:  # Valid hash
+                url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={code}|2|1|1|{hash_part}"
+                logger.debug(f"Using URL with hash from original: {url[:100]}...")
+                return url
+    
+    # Build URL without hash (fallback)
     url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={code}|2|1|1|"
+    logger.debug(f"Using URL without hash: {url[:100]}...")
     return url
 
 
-def fetch_nfce_html(code: str) -> str:
+def fetch_nfce_html(code: str, original_url: str = None) -> str:
     """Fetch HTML content from Fazenda SP"""
-    url = build_consult_url(code)
+    url = build_consult_url(code, original_url)
     
     try:
         with httpx.Client(timeout=30.0, follow_redirects=True) as client:
             response = client.get(url)
             response.raise_for_status()
-            return response.text
+            html_content = response.text
+            # Log first 5000 chars for debugging
+            logger.debug(f"HTML received (first 5000 chars): {html_content[:5000]}")
+            return html_content
     except httpx.HTTPError as e:
         logger.error(f"Error fetching NFC-e: {e}")
         raise Exception("Failed to fetch NFC-e data. Please check the code and try again.")
@@ -77,10 +91,64 @@ def parse_market_info(soup: BeautifulSoup) -> Dict[str, Optional[str]]:
     }
     
     try:
-        # Market name - usually in a div with class "txtTopo" or similar
+        # Try multiple strategies to find market name
+        # Strategy 1: div with class "txtTopo"
         name_elem = soup.find("div", class_="txtTopo")
         if name_elem:
             market_info["name"] = name_elem.get_text(strip=True)
+            logger.debug(f"Found market name via txtTopo: {market_info['name']}")
+        
+        # Strategy 2: Look for text that looks like a company name (contains LTDA, ME, etc.)
+        if not market_info["name"]:
+            all_text = soup.get_text()
+            # Pattern for company names - more flexible
+            company_patterns = [
+                r"([A-Z][A-Z\s]+(?:LTDA|EIRELI|ME|EPP|SA|COMERCIO)[^\n]*)",
+                r"([A-Z][A-Z\s]+COMERCIO[^\n]*)",
+                r"([A-Z][A-Z\s]{10,}(?:LTDA|EIRELI|ME|EPP|SA))",  # More flexible
+                r"([A-Z][A-Z\s]+DE\s+[A-Z\s]+(?:LTDA|EIRELI|ME|EPP|SA))",  # "DE CARNES LTDA"
+            ]
+            for pattern in company_patterns:
+                match = re.search(pattern, all_text)
+                if match:
+                    market_info["name"] = match.group(1).strip()
+                    logger.debug(f"Found market name via regex pattern '{pattern}': {market_info['name']}")
+                    break
+        
+        # Strategy 3: Look in title or h1/h2 tags
+        if not market_info["name"]:
+            title_elem = soup.find("title")
+            if title_elem:
+                title_text = title_elem.get_text()
+                # Extract company name from title if it contains one
+                match = re.search(r"([A-Z][A-Z\s]+(?:LTDA|EIRELI|ME|EPP|SA))", title_text)
+                if match:
+                    market_info["name"] = match.group(1).strip()
+                    logger.debug(f"Found market name via title: {market_info['name']}")
+        
+        # Strategy 4: Look for h1, h2, h3 tags
+        if not market_info["name"]:
+            for tag in ["h1", "h2", "h3"]:
+                header = soup.find(tag)
+                if header:
+                    text = header.get_text(strip=True)
+                    if len(text) > 10 and any(keyword in text.upper() for keyword in ["LTDA", "ME", "EPP", "SA", "COMERCIO"]):
+                        market_info["name"] = text
+                        logger.debug(f"Found market name via {tag}: {market_info['name']}")
+                        break
+        
+        # Strategy 5: Look for strong or b tags with company-like text
+        if not market_info["name"]:
+            for tag in ["strong", "b"]:
+                elems = soup.find_all(tag)
+                for elem in elems:
+                    text = elem.get_text(strip=True)
+                    if len(text) > 10 and len(text) < 100 and any(keyword in text.upper() for keyword in ["LTDA", "ME", "EPP", "SA"]):
+                        market_info["name"] = text
+                        logger.debug(f"Found market name via {tag}: {market_info['name']}")
+                        break
+                if market_info["name"]:
+                    break
         
         # CNPJ - usually follows "CNPJ:" text
         cnpj_elem = soup.find(string=re.compile(r"CNPJ:"))
@@ -91,20 +159,29 @@ def parse_market_info(soup: BeautifulSoup) -> Dict[str, Optional[str]]:
                 cnpj_match = re.search(r"CNPJ:\s*([\d./-]+)", cnpj_text)
                 if cnpj_match:
                     market_info["cnpj"] = cnpj_match.group(1)
+                    logger.debug(f"Found CNPJ: {market_info['cnpj']}")
         
         # Address - usually in a div with class "text"
         address_elems = soup.find_all("div", class_="text")
         address_parts = []
         for elem in address_elems:
             text = elem.get_text(strip=True)
-            # Skip CNPJ line
+            # Skip CNPJ line and empty/short text
             if "CNPJ:" not in text and len(text) > 10:
                 address_parts.append(text)
         
         if address_parts:
             market_info["address"] = ", ".join(address_parts)
+            logger.debug(f"Found address: {market_info['address'][:100]}...")
+        
+        # Log if name was not found
+        if not market_info["name"]:
+            logger.warning("Market name not found with any strategy. HTML sample:")
+            logger.warning(soup.get_text()[:1000])
     except Exception as e:
         logger.warning(f"Error parsing market info: {e}")
+        import traceback
+        logger.warning(traceback.format_exc())
     
     return market_info
 
@@ -112,23 +189,95 @@ def parse_market_info(soup: BeautifulSoup) -> Dict[str, Optional[str]]:
 def parse_emission_date(soup: BeautifulSoup) -> datetime:
     """Parse emission date from HTML"""
     try:
-        # Look for "Emissão:" text
-        emission_elem = soup.find(string=re.compile(r"Emissão:"))
+        # Strategy 1: Look for "Emissão:" text
+        emission_elem = soup.find(string=re.compile(r"Emissão:", re.IGNORECASE))
         if emission_elem:
             parent = emission_elem.find_parent()
             if parent:
                 text = parent.get_text()
+                logger.debug(f"Found 'Emissão:' text: {text[:200]}")
                 # Pattern: DD/MM/YYYY HH:MM:SS
                 date_match = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})", text)
                 if date_match:
                     date_str = f"{date_match.group(1)} {date_match.group(2)}"
+                    logger.debug(f"Parsed emission date: {date_str}")
                     return datetime.strptime(date_str, "%d/%m/%Y %H:%M:%S")
         
-        # Fallback to current date
+        # Strategy 2: Look for date patterns in the entire HTML
+        all_text = soup.get_text()
+        # Try multiple date patterns
+        date_patterns = [
+            r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})",  # DD/MM/YYYY HH:MM:SS
+            r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2})",  # DD/MM/YYYY HH:MM
+            r"Emissão[:\s]+(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})",  # With "Emissão:" prefix
+            r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+-",  # With dash after
+        ]
+        
+        for pattern in date_patterns:
+            match = re.search(pattern, all_text, re.IGNORECASE)
+            if match:
+                try:
+                    if len(match.groups()) == 2:
+                        date_str = f"{match.group(1)} {match.group(2)}"
+                        # Try with seconds first
+                        try:
+                            parsed_date = datetime.strptime(date_str, "%d/%m/%Y %H:%M:%S")
+                            logger.debug(f"Parsed emission date via pattern '{pattern}': {parsed_date}")
+                            return parsed_date
+                        except ValueError:
+                            # Try without seconds
+                            parsed_date = datetime.strptime(date_str, "%d/%m/%Y %H:%M")
+                            logger.debug(f"Parsed emission date via pattern '{pattern}': {parsed_date}")
+                            return parsed_date
+                except ValueError as e:
+                    logger.debug(f"Failed to parse date '{date_str}': {e}")
+                    continue
+        
+        # Strategy 3: Look for "Número:" and "Série:" which usually have date nearby
+        numero_elem = soup.find(string=re.compile(r"Número:", re.IGNORECASE))
+        if numero_elem:
+            parent = numero_elem.find_parent()
+            if parent:
+                # Look for date in the same parent or siblings
+                text = parent.get_text()
+                date_match = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})", text)
+                if date_match:
+                    date_str = f"{date_match.group(1)} {date_match.group(2)}"
+                    try:
+                        parsed_date = datetime.strptime(date_str, "%d/%m/%Y %H:%M:%S")
+                        logger.debug(f"Parsed emission date near 'Número:': {parsed_date}")
+                        return parsed_date
+                    except ValueError:
+                        pass
+        
+        # Strategy 4: Look in specific divs or spans that might contain date
+        # Find elements containing date pattern
+        date_containers = []
+        for tag in ["div", "span", "p", "td"]:
+            containers = soup.find_all(tag, string=re.compile(r"\d{2}/\d{2}/\d{4}"))
+            date_containers.extend(containers)
+        
+        for container in date_containers:
+            text = container.get_text(strip=True)
+            date_match = re.search(r"(\d{2}/\d{2}/\d{4})\s+(\d{2}:\d{2}:\d{2})", text)
+            if date_match:
+                date_str = f"{date_match.group(1)} {date_match.group(2)}"
+                try:
+                    parsed_date = datetime.strptime(date_str, "%d/%m/%Y %H:%M:%S")
+                    logger.debug(f"Parsed emission date from container: {parsed_date}")
+                    return parsed_date
+                except ValueError:
+                    continue
+        
+        # Log what we found for debugging
         logger.warning("Could not parse emission date, using current date")
+        logger.debug("Sample of HTML text where date might be:")
+        logger.debug(all_text[:2000])
         return datetime.utcnow()
     except Exception as e:
         logger.warning(f"Error parsing emission date: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
         return datetime.utcnow()
 
 
@@ -291,11 +440,17 @@ def parse_access_key(soup: BeautifulSoup) -> Optional[str]:
 
 def scrape_nfce(code_or_url: str) -> Dict:
     """Main function to scrape NFC-e data"""
+    # Store original URL if it's a full URL (preserve for hash extraction)
+    original_url = code_or_url if (code_or_url.startswith("http") or code_or_url.startswith("https")) else None
+    logger.debug(f"Original input: {code_or_url[:100] if len(code_or_url) > 100 else code_or_url}")
+    logger.debug(f"Is URL: {original_url is not None}")
+    
     # Parse code
     code = parse_nfce_code(code_or_url)
+    logger.info(f"Parsed NFC-e code: {code}")
     
-    # Fetch HTML
-    html_content = fetch_nfce_html(code)
+    # Fetch HTML - pass original URL to preserve hash
+    html_content = fetch_nfce_html(code, original_url)
     
     # Parse HTML
     soup = BeautifulSoup(html_content, "lxml")
@@ -303,6 +458,8 @@ def scrape_nfce(code_or_url: str) -> Dict:
     # Check if note was found
     error_elem = soup.find("div", id="erro")
     if error_elem and error_elem.get_text(strip=True):
+        error_text = error_elem.get_text(strip=True)
+        logger.error(f"NFC-e error found in HTML: {error_text}")
         raise Exception("NFC-e not found or invalid. Please check the code.")
     
     # Parse data
@@ -313,11 +470,16 @@ def scrape_nfce(code_or_url: str) -> Dict:
     total_taxes = parse_total_taxes(soup)
     access_key = parse_access_key(soup) or code
     
+    # Use fallback if name not found instead of failing
     if not market_info["name"]:
-        raise Exception("Could not parse NFC-e data. The format may have changed.")
+        logger.warning("Market name not found, using fallback")
+        market_info["name"] = "Estabelecimento não identificado"
     
     if not products:
+        logger.error("No products found in NFC-e")
         raise Exception("No products found in NFC-e.")
+    
+    logger.info(f"Successfully parsed NFC-e: {market_info['name']}, {len(products)} products, R$ {total_value:.2f}")
     
     return {
         "access_key": access_key,
