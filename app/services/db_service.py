@@ -180,6 +180,34 @@ def get_note_products(note_id: int) -> List[Dict]:
         return [dict(row) for row in results]
 
 
+def delete_note(note_id: int, user_id: int) -> bool:
+    """Delete a note and all its products (only if belongs to user)"""
+    with get_db_cursor() as cursor:
+        # First check if note belongs to user
+        cursor.execute(
+            "SELECT id FROM notes WHERE id = %s AND user_id = %s",
+            (note_id, user_id)
+        )
+        result = cursor.fetchone()
+        
+        if not result:
+            return False
+        
+        # Delete products first (due to foreign key constraint)
+        cursor.execute(
+            "DELETE FROM products WHERE note_id = %s",
+            (note_id,)
+        )
+        
+        # Then delete the note
+        cursor.execute(
+            "DELETE FROM notes WHERE id = %s AND user_id = %s",
+            (note_id, user_id)
+        )
+        
+        return True
+
+
 def get_user_stats(user_id: int) -> Dict:
     """Get statistics for a user"""
     with get_db_cursor() as cursor:

@@ -7,7 +7,8 @@ from app.services.db_service import (
     check_note_exists,
     get_user_notes,
     get_note_by_id,
-    get_note_products
+    get_note_products,
+    delete_note
 )
 from app.utils.encryption import hash_access_key
 import logging
@@ -77,4 +78,9 @@ def get_note_with_products(note_id: int, user_id: int) -> Optional[Dict]:
         products = get_note_products(note["id"])
         note["products"] = products
     return note
+
+
+def delete_user_note(note_id: int, user_id: int) -> bool:
+    """Delete a note (only if belongs to user)"""
+    return delete_note(note_id, user_id)
 

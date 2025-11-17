@@ -3,7 +3,7 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from typing import Optional
 from app.schemas.note import NoteScanRequest, NoteResponse, NotesListResponse
-from app.services.note_service import process_and_save_note, get_user_notes_with_products, get_note_with_products
+from app.services.note_service import process_and_save_note, get_user_notes_with_products, get_note_with_products, delete_user_note
 from app.api.deps import get_current_user
 from app.config import settings
 import logging
@@ -117,4 +117,23 @@ async def get_note(
         )
     
     return NoteResponse(**note)
+
+
+@router.delete("/{note_id}", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit(f"{settings.rate_limit_per_minute}/minute")
+async def delete_note(
+    request: Request,
+    note_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a note"""
+    success = delete_user_note(note_id, current_user["id"])
+    
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Note not found or you don't have permission to delete it"
+        )
+    
+    return None
 
