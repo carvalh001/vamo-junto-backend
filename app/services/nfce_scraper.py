@@ -47,21 +47,30 @@ def parse_nfce_code(code_or_url: str) -> str:
 
 def build_consult_url(code: str, original_url: str = None) -> str:
     """Build consultation URL for NFC-e"""
-    # If original URL is provided and contains the hash, use it
-    if original_url and "|" in original_url and original_url.count("|") >= 4:
-        # Extract the hash part from original URL if present
-        parts = original_url.split("|")
-        if len(parts) >= 5:
-            # URL format: ...?p=CODE|2|1|1|HASH
-            hash_part = parts[-1]  # Last part is the hash
-            if hash_part and len(hash_part) > 10:  # Valid hash
-                url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={code}|2|1|1|{hash_part}"
-                logger.debug(f"Using URL with hash from original: {url[:100]}...")
-                return url
+    # If original URL is provided with parameters, use it directly
+    if original_url and "?" in original_url and "p=" in original_url:
+        # Extract the parameter part (everything after ?)
+        param_part = original_url.split("?", 1)[1]
+        
+        # Build the full consultation URL using the exact parameters from QR code
+        # The QR code URL might be /qrcode?p=... but we need /NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p=...
+        url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?{param_part}"
+        logger.debug(f"Using URL with original parameters: {url[:150]}...")
+        return url
     
-    # Build URL without hash (fallback)
-    url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={code}|2|1|1|"
-    logger.debug(f"Using URL without hash: {url[:100]}...")
+    # If original URL contains the pipe-separated format, extract and use it
+    if original_url and "|" in original_url:
+        # Extract the p= parameter value (CODE|ver|tipo|num|HASH)
+        match = re.search(r'p=([\d\|A-F0-9]+)', original_url)
+        if match:
+            param_value = match.group(1)
+            url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={param_value}"
+            logger.debug(f"Using URL with extracted parameters: {url[:150]}...")
+            return url
+    
+    # Fallback: Build URL without hash (may not work for all notes)
+    url = f"{settings.nfce_base_url}/NFCeConsultaPublica/Paginas/ConsultaQRCode.aspx?p={code}"
+    logger.warning(f"Using fallback URL without full parameters - may fail: {url[:150]}...")
     return url
 
 
